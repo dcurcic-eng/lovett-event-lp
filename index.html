@@ -305,6 +305,9 @@ button { cursor: pointer; }
 .field ::placeholder { color: var(--mute); opacity: 1; }
 .field input:focus-visible, .field textarea:focus-visible { border-color: var(--teal); outline: 2px solid var(--teal); outline-offset: 1px; }
 .field input:user-invalid { border-color: oklch(55% 0.19 27); }
+.consent { display: flex; align-items: flex-start; gap: calc(8 * var(--u)); font-size: max(11px, calc(12 * var(--u))); line-height: 1.4; color: var(--mute); cursor: pointer; }
+.consent input { flex: none; inline-size: calc(14 * var(--u)); block-size: calc(14 * var(--u)); margin: calc(1.5 * var(--u)) 0 0; accent-color: var(--teal); cursor: pointer; }
+.consent input:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .form-status { font-size: calc(16 * var(--u)); line-height: 1.5; color: var(--teal-deep); }
 .form-status:empty { display: none; }
 
@@ -554,6 +557,8 @@ button { cursor: pointer; }
 .rsvp .lead, .rsvp .form-note { color: var(--line); }
 .rsvp .field label { color: var(--white); }
 .rsvp .field input, .rsvp .field textarea { border-color: transparent; }
+.rsvp .consent { color: var(--line); }
+.rsvp .consent input { accent-color: var(--aqua); }
 .rsvp .form-status { color: var(--aqua); }
 .form-note { font-size: calc(16 * var(--u)); }
 .contact__side { flex: none; inline-size: calc(560 * var(--u)); display: flex; flex-direction: column; gap: calc(28 * var(--u)); }
@@ -823,9 +828,10 @@ button { cursor: pointer; }
         </div>
         <div class="field-row">
           <div class="field"><label for="hero-phone">Phone</label><input id="hero-phone" name="phone" type="tel" autocomplete="tel" inputmode="tel" placeholder="(501) 000-0000" required></div>
-          <div class="field"><label for="hero-email">Email</label><input id="hero-email" name="email" type="email" autocomplete="email" placeholder="you@email.com"></div>
+          <div class="field"><label for="hero-email">Email</label><input id="hero-email" name="email" type="email" autocomplete="email" placeholder="you@email.com" required></div>
         </div>
       </div>
+      <label class="consent" for="hero-consent"><input id="hero-consent" name="newsletter" type="checkbox" required><span>By submitting this form, you agree to receive marketing text messages, alerts, and notifications from Lovett Expert Pain Management. Message frequency may vary. Rates may be applied. You can opt out at any time by replying STOP.</span></label>
       <button class="btn btn--navy btn--block" type="submit">RSVP YOUR SPOT</button>
       <p class="form-status" role="status" aria-live="polite"></p>
     </form>
@@ -1006,9 +1012,10 @@ button { cursor: pointer; }
       </div>
       <div class="field-row">
         <div class="field"><label for="rsvp-phone">Phone</label><input id="rsvp-phone" name="phone" type="tel" autocomplete="tel" inputmode="tel" placeholder="(501) 000-0000" required></div>
-        <div class="field"><label for="rsvp-email">Email</label><input id="rsvp-email" name="email" type="email" autocomplete="email" placeholder="you@example.com"></div>
+        <div class="field"><label for="rsvp-email">Email</label><input id="rsvp-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required></div>
       </div>
       <div class="field"><label for="rsvp-message">Message</label><textarea id="rsvp-message" name="message" placeholder="Anything you'd like us to know before the event? (optional)"></textarea></div>
+      <label class="consent" for="rsvp-consent"><input id="rsvp-consent" name="newsletter" type="checkbox" required><span>By submitting this form, you agree to receive marketing text messages, alerts, and notifications from Lovett Expert Pain Management. Message frequency may vary. Rates may be applied. You can opt out at any time by replying STOP.</span></label>
       <button class="btn btn--orange btn--lg btn--block" type="submit">RSVP YOUR SPOT</button>
       <p class="form-status" role="status" aria-live="polite"></p>
       <p class="form-note">We'll only use your details to confirm your RSVP and event information.</p>
@@ -1233,34 +1240,77 @@ button { cursor: pointer; }
   updateCarousel();
 
   /* ---------- RSVP forms (guide 4.1 button lifecycle) ----------
-     Set data-endpoint on a form to POST to a real handler. Without it, the RSVP is confirmed on the page only. */
+     Both forms POST to the AEVA contacts API. The hero form has no message field, so it sends an empty message. */
+  var RSVP_ENDPOINT = "https://api.aevadigital.com/api/v1/contacts/add_contact_from_form/";
+  var RSVP_ORG = "95af9a94-2423-41e7-ab69-1c45f912a721";
+  var RSVP_FORM_ID = "665";
+  var TRACKING_MAP = { gclid: "google", wbraid: "google", gbraid: "google", fbclid: "meta", ttclid: "tiktok" };
+  var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/;
+
   $$("form[data-rsvp]").forEach(function (form) {
     var btn = $('button[type="submit"]', form), status = $(".form-status", form);
+    function val(name) { var el = form.elements[name]; return el ? el.value.trim() : ""; }
+    function fail(msg, name) {
+      status.textContent = msg;
+      if (form.elements[name]) form.elements[name].focus();
+    }
     form.addEventListener("submit", function (e) {
       e.preventDefault();
-      if (!form.checkValidity()) {
-        var bad = $(":invalid", form);
-        status.textContent = "Please add your first name, last name and phone number.";
-        if (bad) bad.focus();
-        return;
-      }
+      if (btn.getAttribute("aria-busy") === "true") return;
+
+      var firstName = val("first_name"), lastName = val("last_name"), email = val("email"), message = val("message");
+      /* Accept formatted numbers like (501) 000-0000 or +1 501 000 0000, then send +1XXXXXXXXXX */
+      var phone = val("phone").replace(/\D/g, "");
+      if (phone.length === 11 && phone.charAt(0) === "1") phone = phone.slice(1);
+
+      if (!firstName) return fail("Please add your first name.", "first_name");
+      if (!lastName) return fail("Please add your last name.", "last_name");
+      if (phone.length !== 10) return fail("Please enter a 10-digit US phone number.", "phone");
+      if (!EMAIL_RE.test(email)) return fail("Please enter a valid email address.", "email");
+      if (!form.elements.newsletter.checked) return fail("Please tick the consent box to RSVP.", "newsletter");
+
+      var fd = new FormData();
+      fd.append("first_name", firstName);
+      fd.append("last_name", lastName);
+      fd.append("phone", "+1" + phone);
+      fd.append("email", email);
+      fd.append("checkbox", "on");
+      fd.append("organization", RSVP_ORG);
+      fd.append("form", RSVP_FORM_ID);
+      fd.append("message", message);
+      fd.append("form_location", window.location.href);
+
+      /* Ad click id from the URL, first match wins */
+      var urlParams = new URLSearchParams(window.location.search), trackingParam = "", adSource = "other";
+      Object.keys(TRACKING_MAP).some(function (param) {
+        var v = urlParams.get(param);
+        if (!v) return false;
+        trackingParam = v; adSource = TRACKING_MAP[param];
+        return true;
+      });
+      fd.append("tracking_param", trackingParam);
+      fd.append("ad_source", adSource);
+
       var label = btn.textContent, w = btn.offsetWidth;
       btn.style.width = w + "px";
       btn.setAttribute("aria-busy", "true");
       btn.innerHTML = '<span class="spinner" aria-hidden="true"></span><span class="sr-only">Sending</span>';
       status.textContent = "";
-      var endpoint = form.dataset.endpoint;
-      var send = endpoint
-        ? fetch(endpoint, { method: "POST", body: new FormData(form), headers: { Accept: "application/json" } }).then(function (r) { if (!r.ok) throw new Error(); })
-        : new Promise(function (res) { setTimeout(res, 700); });
-      send.then(function () {
+
+      fetch(RSVP_ENDPOINT, { method: "POST", body: fd }).then(function (res) {
+        if (res.ok) return;
+        return res.text().catch(function () { return res.statusText; }).then(function (txt) { throw new Error(txt || "Server error"); });
+      }).then(function () {
+        window.dataLayer = window.dataLayer || [];
+        window.dataLayer.push({ event: "form-success" });
         btn.removeAttribute("aria-busy");
         btn.classList.add("is-success");
         btn.textContent = "YOU'RE ON THE LIST";
         status.textContent = "Thank you! We'll see you Thursday, December 3. Questions? Call (501) 227-7797.";
         form.reset();
         setTimeout(function () { btn.classList.remove("is-success"); btn.textContent = label; btn.style.width = ""; }, 4000);
-      }).catch(function () {
+      }).catch(function (err) {
+        console.error(err);
         btn.removeAttribute("aria-busy");
         btn.textContent = label; btn.style.width = "";
         status.textContent = "Something went wrong. Please call us at (501) 227-7797 to RSVP.";
